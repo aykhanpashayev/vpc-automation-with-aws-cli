@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# create-attach-igw.sh
+# Creates and attaches an Internet Gateway to an existing VPC.
+# Usage: ./create-attach-igw.sh <vpc-id>
+# -----------------------------------------------------------------------------
+
+REGION="us-east-2"
+IGW_NAME="aykhan-igw"
+VPC_ID="${1:-}"
+
+if [[ -z "${VPC_ID}" ]]; then
+  echo "Usage: $0 <vpc-id>"
+  exit 1
+fi
+
+echo "Creating Internet Gateway (${IGW_NAME}) in region ${REGION}..."
+
+# Create the Internet Gateway
+IGW_ID=$(aws ec2 create-internet-gateway \
+  --region "${REGION}" \
+  --tag-specifications "ResourceType=internet-gateway,Tags=[{Key=Name,Value=${IGW_NAME}}]" \
+  --query 'InternetGateway.InternetGatewayId' \
+  --output text)
+
+echo "Attaching Internet Gateway (${IGW_ID}) to VPC (${VPC_ID})..."
+
+aws ec2 attach-internet-gateway \
+  --internet-gateway-id "${IGW_ID}" \
+  --vpc-id "${VPC_ID}" \
+  --region "${REGION}"
+
+echo "Internet Gateway created and attached successfully."
+echo "Internet Gateway ID: ${IGW_ID}"
+echo "VPC ID: ${VPC_ID}"
