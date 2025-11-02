@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# delete-vpc.sh
+# Deletes a specified VPC. The VPC must have no dependent resources.
+# Usage: ./delete-vpc.sh <vpc-id>
+# -----------------------------------------------------------------------------
+
+REGION="us-east-2"
+VPC_ID="${1:-}"
+
+if [[ -z "${VPC_ID}" ]]; then
+  echo "Usage: $0 <vpc-id>"
+  exit 1
+fi
+
+echo "Deleting VPC (${VPC_ID}) in region ${REGION}..."
+
+# Verify that the VPC exists before deleting
+if ! aws ec2 describe-vpcs \
+  --vpc-ids "${VPC_ID}" \
+  --region "${REGION}" >/dev/null 2>&1; then
+  echo "Error: VPC ${VPC_ID} not found in region ${REGION}."
+  exit 1
+fi
+
+# Delete the VPC
+aws ec2 delete-vpc \
+  --vpc-id "${VPC_ID}" \
+  --region "${REGION}"
+
+echo "VPC ${VPC_ID} deleted successfully."
