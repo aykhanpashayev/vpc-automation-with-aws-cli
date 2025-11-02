@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Create a VPC using AWS CLI
+CIDR_BLOCK="172.16.0.0/16"        # changed to a private CIDR range
+REGION="us-east-2"
+VPC_NAME="aykhan-vpc"
+
+echo "Creating VPC (${VPC_NAME}) in region ${REGION}..."
+
+# Create the VPC and capture the ID
+VPC_ID=$(aws ec2 create-vpc \
+  --cidr-block "${CIDR_BLOCK}" \
+  --region "${REGION}" \
+  --tag-specifications "ResourceType=vpc,Tags=[{Key=Name,Value=${VPC_NAME}}]" \
+  --query 'Vpc.VpcId' \
+  --output text)
+
+# Enable DNS support and hostnames (recommended for most setups)
+aws ec2 modify-vpc-attribute --vpc-id "$VPC_ID" --enable-dns-support "{\"Value\":true}" --region "$REGION"
+aws ec2 modify-vpc-attribute --vpc-id "$VPC_ID" --enable-dns-hostnames "{\"Value\":true}" --region "$REGION"
+
+echo "VPC created successfully!"
+echo "VPC ID: ${VPC_ID}"
+echo "Region: ${REGION}"
