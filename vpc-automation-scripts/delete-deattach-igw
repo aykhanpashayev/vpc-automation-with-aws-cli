@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# delete-detach-igw.sh
+# Detaches and deletes an Internet Gateway from the specified VPC.
+# Usage: ./delete-detach-igw.sh <vpc-id> <igw-id>
+# Example: ./delete-detach-igw.sh vpc-0123456789abcdef igw-0abc1234567890def
+# -----------------------------------------------------------------------------
+
+REGION="us-east-2"
+VPC_ID="${1:-}"
+IGW_ID="${2:-}"
+
+if [[ -z "${VPC_ID}" || -z "${IGW_ID}" ]]; then
+  echo "Usage: $0 <vpc-id> <igw-id>"
+  exit 1
+fi
+
+echo "Detaching Internet Gateway (${IGW_ID}) from VPC (${VPC_ID}) in region ${REGION}..."
+
+# Verify IGW exists
+if ! aws ec2 describe-internet-gateways \
+  --internet-gateway-ids "${IGW_ID}" \
+  --region "${REGION}" >/dev/null 2>&1; then
+  echo "Error: Internet Gateway ${IGW_ID} not found in region ${REGION}."
+  exit 1
+fi
+
+# Detach IGW from VPC
+aws ec2 detach-internet-gateway \
+  --internet-gateway-id "${IGW_ID}" \
+  --vpc-id "${VPC_ID}" \
+  --region "${REGION}"
+
+echo "Deleting Internet Gateway (${IGW_ID})..."
+
+# Delete IGW
+aws ec2 delete-internet-gateway \
+  --internet-gateway-id "${IGW_ID}" \
+  --region "${REGION}"
+
+echo "Internet Gateway ${IGW_ID} detached and deleted successfully."
