@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# delete-route-table.sh
+# Safely deletes a route table:
+#  - blocks if it's the MAIN RT
+#  - disassociates all subnet associations
+#  - detaches from Gateway VPC Endpoints (S3/DynamoDB)
+#  - disables any VGW route propagation
+#  - deletes non-local routes (IPv4/IPv6)
+#  - deletes the route table
+#
+# Usage:  ./delete-route-table <route-table-id> [region]
+# Example: ./delete-route-table rtb-0b3c67b677225fab3 us-east-2
+# -----------------------------------------------------------------------------
+
+RTB_ID="${1:-}"
+REGION="${2:-us-east-2}"
+
+if [[ -z "${RTB_ID}" ]]; then
+  echo "Usage: $0 <route-table-id> [region]"
+  exit 1
+fi
+
+echo "Preparing to delete route table ${RTB_ID} in ${REGION}..."
+
+# 0) Verify the route table exists
+if ! aws ec2 describe-route-tables \
+  --region "${REGION}" \
+  --route-table-ids "${RTB_ID}" >/dev/null 2>&1; then
+  echo "Error: Route table ${RTB_ID} not found in region ${REGION}."
+  exit 1
+fi
+
+# 1) Block if this is the MAIN route table
+IS_MAIN=$(aws ec2 describe-route-tables \
+  --region "${REGION}" \
+  --route-table-ids "${RTB_ID}" \
+  --query 'RouteTables[].Associations[?Main==`true`][] | length(@)' \
+  --output text)
+if [[ "${IS_MAIN}" != "0" ]]; then
+  echo "This is the VPC's MAIN route table. Make another route table main first, then retry."
+  exit 1
+fi
+
+# 2) Disassociate from any subnets (non-main associations only)
+ASSOC_IDS=$(aws ec2 describe-route-tables \
+  --region "${REGION}" \
+  --route-table-ids "${RTB_ID}" \
+  --query 'RouteTables[].Associations[?Main!=`true`].RouteTableAssociationId' \
+  --output text)
+if [[ -n "${ASSOC_IDS}" ]]; then
+  echo "Disassociating from subnets: ${ASSOC_IDS}"
+  for a in ${ASSOC_IDS}; do
+    aws ec2 disassociate-route-table --region "${REGION}" --association-id "${a}" >/dev/null
+  done
+fi
+
+# 3) Remove from any Gateway VPC Endpoints (S3/DynamoDB)
+VPCE_IDS=$(aws ec2 describe-vpc-endpoints \
+  --region "${REGION}" \
+  --filters "Name=vpc-endpoint-type,Values=Gateway" \
+  --query "VpcEndpoints[?RouteTableIds && contains(RouteTableIds, '${RTB_ID}')].VpcEndpointId" \
+  --output text)
+if [[ -n "${VPCE_IDS}" ]]; then
+  echo "Removing route table from Gateway VPC Endpoints: ${VPCE_IDS}"
+  aws ec2 modify-vpc-endpoints \
+    --region "${REGION}" \
+    --vpc-endpoint-ids ${VPCE_IDS} \
+    --remove-route-table-ids "${RTB_ID}" >/dev/null
+fi
+
+# 4) Disable VGW route propagation (if any)
+VGW_IDS=$(aws ec2 describe-route-tables \
+  --region "${REGION}" \
+  --route-table-ids "${RTB_ID}" \
+  --query "RouteTables[].PropagatingVgws[].GatewayId" \
+  --output text)
+if [[ -n "${VGW_IDS}" ]]; then
+  echo "Disabling VGW route propagation for: ${VGW_IDS}"
+  for g in ${VGW_IDS}; do
+    aws ec2 disable-vgw-route-propagation \
+      --region "${REGION}" \
+      --route-table-id "${RTB_ID}" \
+      --gateway-id "${g}" >/dev/null
+  done
+fi
+
+# 5) Clean non-local routes (IPv4 and IPv6)
+# Skip the implicit local route (Origin == CreateRouteTable)
+IPV4_ROUTES=$(aws ec2 describe-route-tables \
+  --region "${REGION}" \
+  --route-table-ids "${RTB_ID}" \
+  --query "RouteTables[].Routes[?Origin!='CreateRouteTable' && DestinationCidrBlock!=null].DestinationCidrBlock" \
+  --output text)
+if [[ -n "${IPV4_ROUTES}" ]]; then
+  echo "Deleting non-local IPv4 routes..."
+  for cidr in ${IPV4_ROUTES}; do
+    aws ec2 delete-route \
+      --region "${REGION}" \
+      --route-table-id "${RTB_ID}" \
+      --destination-cidr-block "${cidr}" >/dev/null || true
+  done
+fi
+
+IPV6_ROUTES=$(aws ec2 describe-route-tables \
+  --region "${REGION}" \
+  --route-table-ids "${RTB_ID}" \
+  --query "RouteTables[].Routes[?Origin!='CreateRouteTable' && DestinationIpv6CidrBlock!=null].DestinationIpv6CidrBlock" \
+  --output text)
+if [[ -n "${IPV6_ROUTES}" ]]; then
+  echo "Deleting non-local IPv6 routes..."
+  for cidr6 in ${IPV6_ROUTES}; do
+    aws ec2 delete-route \
+      --region "${REGION}" \
+      --route-table-id "${RTB_ID}" \
+      --destination-ipv6-cidr-block "${cidr6}" >/dev/null || true
+  done
+fi
+
+# 6) Delete the route table
+echo "Deleting route table ${RTB_ID}..."
+aws ec2 delete-route-table --region "${REGION}" --route-table-id "${RTB_ID}"
+
+echo "Route table ${RTB_ID} deleted successfully."
