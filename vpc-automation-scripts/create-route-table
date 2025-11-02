@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# create-route-table.sh
+# Creates a route table, optionally adds a default route to an IGW or NAT GW,
+# and optionally associates it with one or more subnets.
+#
+# Usage:
+#   ./create-route-table.sh --vpc <vpc-id> [options]
+#
+# Examples:
+#   ./create-route-table.sh --vpc vpc-0123456789abcdef0 --name public-rt \
+#     --igw igw-0abc1234567890def -s subnet-aaaa -s subnet-bbbb
+#
+#   ./create-route-table.sh --vpc vpc-0123456789abcdef0 --name private-rt \
+#     --nat nat-0123abcd4567efgh -s subnet-cccc
+# -----------------------------------------------------------------------------
+
+# Defaults
+REGION="us-east-2"
+RT_NAME="aykhan-rt"
+DEST_CIDR="0.0.0.0/0"
+IGW_ID=""
+NAT_GW_ID=""
+SUBNET_IDS=()
+
+usage() {
+  cat <<EOF
+Usage: $0 --vpc <vpc-id> [options]
+
+Required:
+  -v, --vpc <vpc-id>             VPC ID to create the route table in
+
+Optional:
+  -n, --name <name>              Name tag for the route table (default: ${RT_NAME})
+  -r, --region <region>          AWS region (default: ${REGION})
+
+Route options (choose at most one target):
+  --igw <igw-id>                 Add default route (${DEST_CIDR}) to this Internet Gateway
+  --nat <nat-gw-id>              Add default route (${DEST_CIDR}) to this NAT Gateway
+  --dest <cidr>                  Destination CIDR for the route (default: ${DEST_CIDR})
+
+Associations:
+  -s, --subnet <subnet-id>       Associate the route table with a subnet (can be repeated)
+
+Examples:
+  $0 --vpc vpc-0123456789abcdef0 --name public-rt --igw igw-0abc1234567890def -s subnet-1 -s subnet-2
+  $0 --vpc vpc-0123456789abcdef0 --name private-rt --nat nat-0123abcd4567efgh -s subnet-3
+EOF
+}
+
+# Parse args
+VPC_ID=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v|--vpc) VPC_ID="${2:-}"; shift 2 ;;
+    -n|--name) RT_NAME="${2:-}"; shift 2 ;;
+    -r|--region) REGION="${2:-}"; shift 2 ;;
+    --igw) IGW_ID="${2:-}"; shift 2 ;;
+    --nat) NAT_GW_ID="${2:-}"; shift 2 ;;
+    --dest) DEST_CIDR="${2:-}"; shift 2 ;;
+    -s|--subnet) SUBNET_IDS+=("${2:-}"); shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown argument: $1"; usage; exit 1 ;;
+  esac
+done
+
+if [[ -z "${VPC_ID}" ]]; then
+  echo "Error: --vpc is required."
+  usage
+  exit 1
+fi
+
+if [[ -n "${IGW_ID}" && -n "${NAT_GW_ID}" ]]; then
+  echo "Error: specify only one of --igw or --nat."
+  usage
+  exit 1
+fi
+
+echo "Creating route table '${RT_NAME}' in VPC ${VPC_ID} (${REGION})..."
+
+RTB_ID=$(aws ec2 create-route-table \
+  --vpc-id "${VPC_ID}" \
+  --region "${REGION}" \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+
+aws ec2 create-tags \
+  --resources "${RTB_ID}" \
+  --region "${REGION}" \
+  --tags "Key=Name,Value=${RT_NAME}"
+
+echo "Route table created: ${RTB_ID}"
+
+# Helper: create or replace the default route if it already exists
+create_or_replace_default_route() {
+  local rtb_id="$1"
+  local dest="$2"
+
+  # Try to create; if it already exists, replace it.
+  if [[ -n "${IGW_ID}" ]]; then
+    aws ec2 create-route \
+      --route-table-id "${rtb_id}" \
+      --destination-cidr-block "${dest}" \
+      --gateway-id "${IGW_ID}" \
+      --region "${REGION}" >/dev/null || \
+    aws ec2 replace-route \
+      --route-table-id "${rtb_id}" \
+      --destination-cidr-block "${dest}" \
+      --gateway-id "${IGW_ID}" \
+      --region "${REGION}" >/dev/null
+    echo "Route ${dest} → IGW ${IGW_ID}"
+  elif [[ -n "${NAT_GW_ID}" ]]; then
+    aws ec2 create-route \
+      --route-table-id "${rtb_id}" \
+      --destination-cidr-block "${dest}" \
+      --nat-gateway-id "${NAT_GW_ID}" \
+      --region "${REGION}" >/dev/null || \
+    aws ec2 replace-route \
+      --route-table-id "${rtb_id}" \
+      --destination-cidr-block "${dest}" \
+      --nat-gateway-id "${NAT_GW_ID}" \
+      --region "${REGION}" >/dev/null
+    echo "Route ${dest} → NAT GW ${NAT_GW_ID}"
+  fi
+}
+
+# Optionally add a route
+if [[ -n "${IGW_ID}" || -n "${NAT_GW_ID}" ]]; then
+  echo "Adding route ${DEST_CIDR}..."
+  create_or_replace_default_route "${RTB_ID}" "${DEST_CIDR}"
+  echo "Default route configured."
+fi
+
+# Optionally associate to one or more subnets
+if [[ ${#SUBNET_IDS[@]} -gt 0 ]]; then
+  echo "Associating route table with ${#SUBNET_IDS[@]} subnet(s)..."
+  for sn in "${SUBNET_IDS[@]}"; do
+    ASSOC_ID=$(aws ec2 associate-route-table \
+      --route-table-id "${RTB_ID}" \
+      --subnet-id "${sn}" \
+      --region "${REGION}" \
+      --query 'AssociationId' \
+      --output text)
+    echo "Associated with subnet: ${sn} (AssociationId: ${ASSOC_ID})"
+  done
+fi
+
+echo "Done."
+echo "Route Table ID: ${RTB_ID}"
