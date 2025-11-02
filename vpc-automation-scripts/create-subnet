@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# -----------------------------------------------------------------------------
+# create-subnet.sh
+# Creates a subnet in the specified VPC.
+# Usage: ./create-subnet.sh <vpc-id> [cidr-block]
+# Example: ./create-subnet.sh vpc-0abc1234def567890 172.16.1.0/24
+# -----------------------------------------------------------------------------
+
+REGION="us-east-2"
+AVAILABILITY_ZONE="us-east-2a"
+SUBNET_NAME="aykhan-public-subnet"
+
+VPC_ID="${1:-}"
+CIDR_BLOCK="${2:-172.16.1.0/24}"   # changed to private range (172.16.x.x)
+
+if [[ -z "${VPC_ID}" ]]; then
+  echo "Usage: $0 <vpc-id> [cidr-block]"
+  exit 1
+fi
+
+echo "Creating subnet (${SUBNET_NAME}) in VPC (${VPC_ID})..."
+
+# Create the subnet and capture its ID
+SUBNET_ID=$(aws ec2 create-subnet \
+  --vpc-id "${VPC_ID}" \
+  --cidr-block "${CIDR_BLOCK}" \
+  --availability-zone "${AVAILABILITY_ZONE}" \
+  --region "${REGION}" \
+  --tag-specifications "ResourceType=subnet,Tags=[{Key=Name,Value=${SUBNET_NAME}}]" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+# Enable automatic public IP assignment for instances in this subnet (for public subnet)
+aws ec2 modify-subnet-attribute \
+  --subnet-id "${SUBNET_ID}" \
+  --map-public-ip-on-launch \
+  --region "${REGION}"
+
+echo "Subnet created successfully!"
+echo "Subnet ID: ${SUBNET_ID}"
+echo "VPC ID: ${VPC_ID}"
+echo "CIDR Block: ${CIDR_BLOCK}"
+echo "Availability Zone: ${AVAILABILITY_ZONE}"
